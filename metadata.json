@@ -1,0 +1,8 @@
+{
+  "name": "OmniAgent MAS",
+  "description": "A sophisticated multi-agent system for creating slides, websites, designs, and more with an elegant animated interface.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
