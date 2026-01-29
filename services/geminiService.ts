@@ -2,7 +2,12 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { AgentType, ExecutionPlan, YouTubeVideo } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+// Initialize AI right before the API call to ensure it always uses the most up-to-date API key from the environment
+const getAI = () => {
+  // Obtain API key exclusively from process.env.API_KEY
+  return new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+};
+
 const YT_API_KEY = "AIzaSyClmASaLcdl6F8lkjFKbbxTRWpu_Hngk6I";
 
 const fetchYouTubeData = async (query: string): Promise<YouTubeVideo[]> => {
@@ -28,6 +33,7 @@ const fetchYouTubeData = async (query: string): Promise<YouTubeVideo[]> => {
 };
 
 export const getExecutionPlan = async (prompt: string, type: AgentType | null): Promise<ExecutionPlan> => {
+  const ai = getAI();
   const model = 'gemini-3-pro-preview';
   
   const systemInstruction = `You are the OmniAgent Strategist. 
@@ -43,41 +49,48 @@ export const getExecutionPlan = async (prompt: string, type: AgentType | null): 
   For prompts about "roadmap", "carrier", "career", "how to become", "path", use ROADMAP_STRATEGIST.
   Provide a structured JSON plan.`;
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: `User Prompt: ${prompt}. ${type ? `Mode already selected: ${type}` : 'Analyze to find best mode.'}`,
-    config: {
-      systemInstruction,
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          objective: { type: Type.STRING },
-          technicalStack: { type: Type.ARRAY, items: { type: Type.STRING } },
-          estimatedComplexity: { type: Type.STRING, enum: ['Low', 'Medium', 'High', 'Critical'] },
-          steps: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                id: { type: Type.STRING },
-                title: { type: Type.STRING },
-                description: { type: Type.STRING },
-                agent: { type: Type.STRING }
-              },
-              required: ["id", "title", "description", "agent"]
+  try {
+    const response = await ai.models.generateContent({
+      model,
+      contents: `User Prompt: ${prompt}. ${type ? `Mode already selected: ${type}` : 'Analyze to find best mode.'}`,
+      config: {
+        systemInstruction,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            objective: { type: Type.STRING },
+            technicalStack: { type: Type.ARRAY, items: { type: Type.STRING } },
+            estimatedComplexity: { type: Type.STRING, enum: ['Low', 'Medium', 'High', 'Critical'] },
+            steps: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  id: { type: Type.STRING },
+                  title: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  agent: { type: Type.STRING }
+                },
+                required: ["id", "title", "description", "agent"]
+              }
             }
-          }
-        },
-        required: ["objective", "steps", "technicalStack", "estimatedComplexity"]
+          },
+          required: ["objective", "steps", "technicalStack", "estimatedComplexity"]
+        }
       }
-    }
-  });
+    });
 
-  return JSON.parse(response.text || "{}");
+    // Access .text property directly from response
+    return JSON.parse(response.text || "{}");
+  } catch (err) {
+    console.error("Execution Plan Generation Error:", err);
+    throw err;
+  }
 };
 
 export const getAgentResponse = async (prompt: string, type: AgentType, planContext?: ExecutionPlan) => {
+  const ai = getAI();
   let modelName = 'gemini-3-flash-preview';
   let systemInstruction = "You are a specialized AI agent.";
   let responseSchema: any = null;
@@ -93,6 +106,7 @@ export const getAgentResponse = async (prompt: string, type: AgentType, planCont
         contents: `User Query: ${prompt}. Analyze results: ${JSON.stringify(videos)}.`,
         config: { systemInstruction: "Video market strategist." }
       });
+      // Access .text property directly
       return { type, content: { videos, analysis: analysisResponse.text }, explanation: "Analysis complete." };
 
     case AgentType.ROADMAP_STRATEGIST:
@@ -172,6 +186,7 @@ export const getAgentResponse = async (prompt: string, type: AgentType, planCont
         contents: { parts: [{ text: `Design task: ${prompt}. ${planRef}` }] },
       });
       let imageUrl = '';
+      // Find the image part in candidates
       for (const part of imgResponse.candidates?.[0]?.content?.parts || []) {
         if (part.inlineData) imageUrl = `data:image/png;base64,${part.inlineData.data}`;
       }
@@ -180,33 +195,40 @@ export const getAgentResponse = async (prompt: string, type: AgentType, planCont
     case AgentType.RESEARCHER:
       modelName = 'gemini-3-pro-preview';
       systemInstruction = `Senior Deep Researcher. ${planRef}`;
+      // Grounding via Google Search
       tools = [{ googleSearch: {} }];
       break;
   }
 
-  const response = await ai.models.generateContent({
-    model: modelName,
-    contents: prompt,
-    config: {
-      systemInstruction,
-      tools: tools.length > 0 ? tools : undefined,
-      responseMimeType: responseSchema ? "application/json" : "text/plain",
-      responseSchema: responseSchema || undefined
-    },
-  });
+  try {
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents: prompt,
+      config: {
+        systemInstruction,
+        tools: tools.length > 0 ? tools : undefined,
+        responseMimeType: responseSchema ? "application/json" : "text/plain",
+        responseSchema: responseSchema || undefined
+      },
+    });
 
-  const text = response.text || "{}";
-  if (responseSchema) {
-    const parsed = JSON.parse(text);
-    return { type, content: parsed, explanation: parsed.explanation || "Execution complete." };
+    const text = response.text || "{}";
+    if (responseSchema) {
+      const parsed = JSON.parse(text);
+      return { type, content: parsed, explanation: parsed.explanation || "Execution complete." };
+    }
+
+    // Extract grounding chunks for search sources
+    return { 
+      type, 
+      content: { 
+        content: text,
+        sources: response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => chunk.web?.uri || chunk.web?.title).filter(Boolean) || []
+      }, 
+      explanation: "Synthesis finished." 
+    };
+  } catch (err) {
+    console.error(`Agent (${type}) Execution Error:`, err);
+    throw err;
   }
-
-  return { 
-    type, 
-    content: { 
-      content: text,
-      sources: response.candidates?.[0]?.groundingMetadata?.groundingChunks?.map((chunk: any) => chunk.web?.uri || chunk.web?.title).filter(Boolean) || []
-    }, 
-    explanation: "Synthesis finished." 
-  };
 };
